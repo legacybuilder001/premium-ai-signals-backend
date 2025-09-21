@@ -851,3 +851,18 @@ if __name__ == '__main__':
     
     app.run(host='0.0.0.0', port=8000, debug=False)
 
+
+
+
+@app.route("/signals/filtered", methods=["GET"])
+def get_filtered_signals():
+    """Get signals filtered by tier"""
+    tier = request.args.get("tier", "all")
+    if tier == "all":
+        return get_signals()
+    else:
+        db = get_db()
+        signals = db.execute("SELECT * FROM signals WHERE tier = ? ORDER BY timestamp DESC", (tier,)).fetchall()
+        return jsonify([dict(signal) for signal in signals])
+
+
