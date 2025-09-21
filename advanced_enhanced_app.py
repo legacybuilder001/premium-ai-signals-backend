@@ -46,7 +46,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app, origins="*")
+CORS(app, origins=["https://premium-ai-signals-frontend-ten.vercel.app"])
 
 # Configuration
 API_KEYS = {
