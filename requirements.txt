@@ -10,3 +10,7 @@ sqlalchemy==2.0.23
 gunicorn
 flask
 
+
+
+flask-cors
+
