@@ -866,3 +866,14 @@ def get_filtered_signals():
         return jsonify([dict(signal) for signal in signals])
 
 
+
+
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"message": "Premium AI Signals Backend v4.0 is running!"})
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "healthy", "version": "4.0"}))
+
