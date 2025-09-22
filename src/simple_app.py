@@ -114,9 +114,23 @@ def init_db():
 def generate_simple_signal(asset, otc=False, timeframe='1m'):
     """Generate signal using simple logic without ML dependencies"""
     
-    # Simulate market data analysis
+    # Determine asset type for specialized signal generation
+    asset_type = get_asset_type(asset)
+    
+    # Simulate market data analysis with asset-specific logic
     base_confidence = random.uniform(45, 95)
     direction = random.choice(['CALL', 'PUT'])
+    
+    # Asset-specific confidence adjustments
+    if asset_type == 'stock':
+        # Stocks tend to have more predictable patterns during market hours
+        base_confidence += random.uniform(0, 10)
+    elif asset_type == 'crypto':
+        # Crypto is more volatile, adjust confidence accordingly
+        base_confidence += random.uniform(-5, 15)
+    elif asset_type == 'otc_forex':
+        # OTC forex has different characteristics
+        base_confidence += random.uniform(-3, 8)
     
     # Determine tier based on confidence
     if base_confidence >= 82:
@@ -132,44 +146,42 @@ def generate_simple_signal(asset, otc=False, timeframe='1m'):
     # Generate signal data
     signal_id = str(uuid.uuid4())
     timestamp = datetime.now()
-    expiry_time = timestamp + timedelta(minutes=1 if timeframe == '1m' else 5)
+    
+    # Adjust expiry time based on asset type
+    if asset_type == 'stock':
+        expiry_time = timestamp + timedelta(minutes=5 if timeframe == '5m' else 1)
+    else:
+        expiry_time = timestamp + timedelta(minutes=1 if timeframe == '1m' else 5)
     
     signal_data = {
         'id': signal_id,
         'asset': asset,
+        'asset_type': asset_type,
         'direction': direction,
         'confidence': round(confidence, 1),
         'tier': tier,
-        'pattern': random.choice(['Bullish Engulfing', 'Bearish Reversal', 'Doji', 'Hammer', 'No Pattern']),
+        'pattern': get_asset_specific_pattern(asset_type),
         'timestamp': timestamp.isoformat(),
         'expiry_time': expiry_time.isoformat(),
         'expire': timeframe,
         'status': 'active',
-        'price': round(random.uniform(0.8, 1.2), 5),
+        'price': get_simulated_price(asset, asset_type),
         'risk_pct': 2.0,
         'calibrated_probability': confidence / 100,
         'confluence_score': random.uniform(0, 50),
-        'confluence_breakdown': {
-            '1m': random.choice(['Bullish', 'Bearish', 'Neutral']),
-            '5m': random.choice(['Bullish', 'Bearish', 'Neutral']),
-            '15m': random.choice(['Bullish', 'Bearish', 'Neutral'])
-        },
-        'technical': {
-            'rsi': random.uniform(20, 80),
-            'macd': random.uniform(-0.01, 0.01),
-            'stoch_k': random.uniform(20, 80),
-            'atr': random.uniform(0.0005, 0.002)
-        },
+        'confluence_breakdown': get_asset_specific_confluence(asset_type),
+        'technical': get_asset_specific_technical(asset_type),
         'sentiment': {
             'label': random.choice(['Bullish', 'Bearish', 'Neutral']),
             'score': random.uniform(-1, 1)
         },
-        'news_headlines': ['Market analysis indicates potential movement', 'Technical indicators show confluence'],
+        'news_headlines': get_asset_specific_news(asset, asset_type),
         'regime': random.choice(['trending', 'ranging', 'breakout']),
         'pattern_win_rate': random.uniform(60, 85),
         'session_boost': random.uniform(-5, 5),
         'outcome': None,
-        'pnl': None
+        'pnl': None,
+        'otc_mode': otc
     }
     
     # Apply reinforcement learning if available
@@ -195,6 +207,99 @@ def generate_simple_signal(asset, otc=False, timeframe='1m'):
         logger.error(f"Database error: {e}")
     
     return signal_data
+
+def get_asset_type(asset):
+    """Determine asset type from asset symbol"""
+    if '-OTC' in asset:
+        return 'otc_forex'
+    elif asset in ['AAPL', 'GOOGL', 'MSFT', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX', 'BABA', 'AMD',
+                   'UBER', 'ZOOM', 'PYPL', 'ADBE', 'CRM', 'INTC', 'ORCL', 'IBM', 'CSCO', 'V']:
+        return 'stock'
+    elif 'USD' in asset and len(asset) == 6 and asset.endswith('USD'):
+        return 'crypto'
+    else:
+        return 'forex'
+
+def get_asset_specific_pattern(asset_type):
+    """Get asset-specific trading patterns"""
+    patterns = {
+        'forex': ['Bullish Engulfing', 'Bearish Reversal', 'Doji', 'Hammer', 'Shooting Star'],
+        'otc_forex': ['OTC Breakout', 'Extended Hours Reversal', 'Gap Fill', 'Momentum Continuation'],
+        'stock': ['Earnings Gap', 'Support Bounce', 'Resistance Break', 'Volume Spike', 'Moving Average Cross'],
+        'crypto': ['Whale Movement', 'Support Test', 'Breakout Rally', 'Fear/Greed Reversal', 'Hash Rate Impact']
+    }
+    return random.choice(patterns.get(asset_type, patterns['forex']))
+
+def get_simulated_price(asset, asset_type):
+    """Get simulated price based on asset type"""
+    if asset_type == 'stock':
+        return round(random.uniform(50, 500), 2)
+    elif asset_type == 'crypto':
+        if 'BTC' in asset:
+            return round(random.uniform(25000, 45000), 2)
+        elif 'ETH' in asset:
+            return round(random.uniform(1500, 3000), 2)
+        else:
+            return round(random.uniform(0.1, 10), 4)
+    else:  # forex or otc_forex
+        return round(random.uniform(0.8, 1.2), 5)
+
+def get_asset_specific_confluence(asset_type):
+    """Get asset-specific confluence breakdown"""
+    timeframes = ['1m', '5m', '15m']
+    signals = ['Bullish', 'Bearish', 'Neutral']
+    
+    if asset_type == 'stock':
+        # Stocks tend to have more consistent directional bias
+        bias = random.choice(['Bullish', 'Bearish'])
+        return {tf: bias if random.random() > 0.3 else random.choice(signals) for tf in timeframes}
+    else:
+        return {tf: random.choice(signals) for tf in timeframes}
+
+def get_asset_specific_technical(asset_type):
+    """Get asset-specific technical indicators"""
+    base_technical = {
+        'rsi': random.uniform(20, 80),
+        'macd': random.uniform(-0.01, 0.01),
+        'stoch_k': random.uniform(20, 80),
+        'atr': random.uniform(0.0005, 0.002)
+    }
+    
+    if asset_type == 'stock':
+        base_technical.update({
+            'volume_ratio': random.uniform(0.5, 3.0),
+            'pe_ratio': random.uniform(10, 50),
+            'beta': random.uniform(0.5, 2.0)
+        })
+    elif asset_type == 'crypto':
+        base_technical.update({
+            'funding_rate': random.uniform(-0.01, 0.01),
+            'fear_greed_index': random.uniform(10, 90),
+            'network_activity': random.uniform(0.5, 2.0)
+        })
+    
+    return base_technical
+
+def get_asset_specific_news(asset, asset_type):
+    """Get asset-specific news headlines"""
+    if asset_type == 'stock':
+        return [
+            f'{asset} earnings report shows strong performance',
+            f'Analyst upgrades {asset} price target',
+            f'{asset} announces new product launch'
+        ]
+    elif asset_type == 'crypto':
+        return [
+            f'{asset} network upgrade scheduled',
+            f'Institutional adoption of {asset} increases',
+            f'{asset} regulatory clarity improves sentiment'
+        ]
+    else:
+        return [
+            'Central bank policy meeting scheduled',
+            'Economic data release shows mixed signals',
+            'Geopolitical tensions affect currency markets'
+        ]
 
 # API Routes
 @app.route('/health', methods=['GET'])
