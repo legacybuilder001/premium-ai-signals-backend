@@ -19,6 +19,14 @@ import logging
 from datetime import datetime, timedelta
 import requests
 
+# Import reinforcement learning module
+try:
+    from reinforcement_learning import get_adaptive_signal, update_signal_outcome
+    RL_AVAILABLE = True
+except ImportError:
+    RL_AVAILABLE = False
+    logging.warning("Reinforcement learning module not available")
+
 # Suppress warnings
 warnings.filterwarnings('ignore')
 
@@ -64,7 +72,7 @@ def init_db():
     """Initialize database"""
     with app.app_context():
         db = get_db()
-        db.executescript('''
+        db.executescript("""
             CREATE TABLE IF NOT EXISTS signals (
                 id TEXT PRIMARY KEY,
                 asset TEXT NOT NULL,
@@ -78,7 +86,8 @@ def init_db():
                 pnl REAL,
                 status TEXT DEFAULT 'active'
             );
-            
+        """)
+        db.executescript("""
             CREATE TABLE IF NOT EXISTS settings (
                 id INTEGER PRIMARY KEY,
                 user_id TEXT DEFAULT 'default',
@@ -89,7 +98,7 @@ def init_db():
                 api_settings TEXT,
                 updated_at TEXT
             );
-        ''')
+        """)
         db.commit()
 
 # Simple signal generation without ML dependencies
@@ -153,6 +162,16 @@ def generate_simple_signal(asset, otc=False, timeframe='1m'):
         'outcome': None,
         'pnl': None
     }
+    
+    # Apply reinforcement learning if available
+    if RL_AVAILABLE:
+        try:
+            signal_data = get_adaptive_signal(asset, signal_data)
+            if signal_data.get('skip'):
+                # RL recommends skipping this signal
+                return {'message': 'Signal generation skipped by RL', 'skip': True}
+        except Exception as e:
+            logger.error(f"RL adaptation error: {e}")
     
     # Store in database
     try:
@@ -255,6 +274,89 @@ def test_telegram():
             return jsonify({'message': 'Failed to send test message'}), 400
     except Exception as e:
         return jsonify({'message': f'Error: {str(e)}'}), 500
+
+@app.route('/signals/<signal_id>/outcome', methods=['POST'])
+def update_signal_outcome_endpoint(signal_id):
+    """Update signal outcome for RL training"""
+    try:
+        data = request.get_json()
+        outcome = data.get('outcome')  # 'win' or 'loss'
+        pnl = data.get('pnl', 0.0)
+        
+        if outcome not in ['win', 'loss']:
+            return jsonify({'error': 'Invalid outcome. Must be "win" or "loss"'}), 400
+        
+        # Update database
+        db = get_db()
+        db.execute('''
+            UPDATE signals SET outcome = ?, pnl = ? WHERE id = ?
+        ''', (outcome, pnl, signal_id))
+        db.commit()
+        
+        # Update RL model if available
+        if RL_AVAILABLE:
+            try:
+                update_signal_outcome(signal_id, outcome, pnl)
+            except Exception as e:
+                logger.error(f"RL update error: {e}")
+        
+        return jsonify({
+            'message': 'Signal outcome updated successfully',
+            'signal_id': signal_id,
+            'outcome': outcome,
+            'pnl': pnl,
+            'rl_updated': RL_AVAILABLE
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating signal outcome: {e}")
+        return jsonify({'error': 'Failed to update signal outcome'}), 500
+
+@app.route('/rl/stats', methods=['GET'])
+def get_rl_stats():
+    """Get reinforcement learning statistics"""
+    if not RL_AVAILABLE:
+        return jsonify({'error': 'Reinforcement learning not available'}), 404
+    
+    try:
+        from reinforcement_learning import adaptive_generator
+        
+        # Get Q-table statistics
+        q_table = adaptive_generator.q_learning.q_table
+        total_states = len(q_table)
+        total_actions = sum(len(actions) for actions in q_table.values())
+        
+        # Get recent performance
+        db = get_db()
+        cursor = db.execute('''
+            SELECT COUNT(*) as total, 
+                   SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END) as wins,
+                   AVG(confidence) as avg_confidence
+            FROM signals 
+            WHERE outcome IS NOT NULL 
+            AND timestamp > datetime('now', '-7 days')
+        ''')
+        
+        stats = cursor.fetchone()
+        
+        win_rate = (stats[1] / stats[0] * 100) if stats[0] > 0 else 0
+        
+        return jsonify({
+            'rl_available': True,
+            'q_table_states': total_states,
+            'q_table_actions': total_actions,
+            'recent_performance': {
+                'total_signals': stats[0],
+                'win_rate': round(win_rate, 2),
+                'avg_confidence': round(stats[2], 2) if stats[2] else 0
+            },
+            'current_regime': adaptive_generator.regime_detector.current_regime,
+            'regime_confidence': round(adaptive_generator.regime_detector.regime_confidence, 2)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting RL stats: {e}")
+        return jsonify({'error': 'Failed to get RL statistics'}), 500
 
 @app.route('/settings', methods=['POST'])
 def save_settings():
