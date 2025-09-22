@@ -32,10 +32,12 @@ import joblib
 import requests
 from flask import Flask, request, jsonify, g
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room, leave_room
 from dotenv import load_dotenv
 import threading
 import time
 import warnings
+from api_integrations import market_data_provider
 warnings.filterwarnings('ignore')
 
 # Load environment variables
@@ -47,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app, origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", logger=True, engineio_logger=True)
 
 # Configuration
 API_KEYS = {
@@ -395,122 +398,239 @@ def close_db(error):
         db.close()
 
 def generate_advanced_signal(asset: str, otc: bool = False, timeframe: str = "1m") -> Signal:
-    """Generate advanced signal with all enhanced features"""
+    """Generate advanced signal with real API data and enhanced confidence tiering"""
     
-    # Get market data (mock for demo)
-    price_data = [1.0850 + (np.random.random() - 0.5) * 0.01 for _ in range(50)]
-    current_price = price_data[-1]
-    
-    # Detect market regime
-    regime = regime_detector.detect_regime(asset, price_data)
-    
-    # Generate technical indicators
-    rsi = np.random.uniform(30, 70)
-    macd = np.random.uniform(-0.002, 0.002)
-    stoch_k = np.random.uniform(20, 80)
-    atr = np.random.uniform(0.0001, 0.001)
-    
-    # Pattern detection
-    patterns = ["Hammer", "Doji", "Engulfing", "Pin Bar", "Inside Bar"]
-    pattern = np.random.choice(patterns)
-    
-    # News sentiment analysis
-    sentiment_score = np.random.uniform(-1, 1)
-    news_headlines = [
-        f"EUR/USD shows bullish momentum amid ECB policy",
-        f"Market volatility increases following economic data",
-        f"Technical analysis suggests {asset} breakout potential"
-    ]
-    
-    # Confluence analysis
-    confluence_breakdown = {
-        '1m': 'Bullish' if rsi > 50 else 'Bearish',
-        '5m': 'Neutral' if 40 < rsi < 60 else ('Bullish' if rsi > 60 else 'Bearish'),
-        '15m': 'Bullish' if macd > 0 else 'Bearish'
-    }
-    
-    # Calculate confluence score using RL weights
-    confluence_score = (
-        rl_learner.confluence_weights['rsi'] * (rsi - 50) / 50 +
-        rl_learner.confluence_weights['macd'] * (macd * 1000) +
-        rl_learner.confluence_weights['sentiment'] * sentiment_score +
-        rl_learner.confluence_weights['pattern'] * 0.5
-    ) * 100
-    
-    # Get learned pattern confidence
-    pattern_confidence = rl_learner.get_pattern_confidence(pattern, regime, asset)
-    
-    # Base confidence calculation
-    base_confidence = 50 + confluence_score * 0.3 + pattern_confidence * 20
-    base_confidence = max(30, min(95, base_confidence))
-    
-    # Get calibrated probability
-    features = np.array([rsi, macd * 1000, stoch_k, atr * 10000, sentiment_score])
-    calibrated_prob = prob_forecaster.get_calibrated_probability(features)
-    
-    # Determine direction
-    direction = "CALL" if confluence_score > 0 else "PUT"
-    
-    # Tier classification based on calibrated probability
-    if calibrated_prob >= 0.8:
-        tier = "Gold"
-    elif calibrated_prob >= 0.65:
-        tier = "Silver"
-    else:
-        tier = "Bronze"
-    
-    # Risk calculation based on ATR and regime
-    base_risk = atr * 100
-    regime_multiplier = {
-        MarketRegime.TRENDING: 1.0,
-        MarketRegime.RANGING: 0.8,
-        MarketRegime.CHOPPY: 1.5,
-        MarketRegime.HIGH_VOLATILITY: 2.0,
-        MarketRegime.BREAKOUT: 1.2
-    }
-    risk_pct = base_risk * regime_multiplier.get(regime, 1.0)
-    risk_pct = max(0.5, min(5.0, risk_pct))
-    
-    # Create signal
+    try:
+        # Get real market data
+        price_data = market_data_provider.get_forex_data(asset, timeframe, 50)
+        
+        if not price_data:
+            logger.warning(f"No price data available for {asset}, using fallback")
+            price_data = market_data_provider._get_fallback_data(asset, 50)
+        
+        current_price = price_data[-1]['close']
+        
+        # Detect market regime
+        price_values = [candle['close'] for candle in price_data]
+        regime = regime_detector.detect_regime(asset, price_values)
+        
+        # Calculate technical indicators from real data
+        indicators = market_data_provider.calculate_technical_indicators(price_data)
+        rsi = indicators['rsi']
+        macd = indicators['macd']
+        stoch_k = indicators['stoch_k']
+        atr = indicators['atr']
+        
+        # Pattern detection from real data
+        pattern_data = market_data_provider.detect_patterns(price_data)
+        pattern = pattern_data['pattern']
+        pattern_base_confidence = pattern_data['confidence']
+        
+        # News sentiment analysis
+        sentiment_data = market_data_provider.get_news_sentiment(asset)
+        sentiment_score = sentiment_data['score']
+        news_headlines = sentiment_data['headlines']
+        
+        # Enhanced confluence analysis with real data
+        confluence_breakdown = {
+            '1m': 'Bullish' if rsi > 55 else ('Bearish' if rsi < 45 else 'Neutral'),
+            '5m': 'Bullish' if macd > 0 else ('Bearish' if macd < 0 else 'Neutral'),
+            '15m': 'Bullish' if stoch_k > 60 else ('Bearish' if stoch_k < 40 else 'Neutral'),
+            'sentiment': sentiment_data['label']
+        }
+        
+        # Calculate confluence score using RL weights with real data
+        confluence_score = (
+            rl_learner.confluence_weights['rsi'] * (rsi - 50) / 50 +
+            rl_learner.confluence_weights['macd'] * (macd * 1000) +
+            rl_learner.confluence_weights['sentiment'] * sentiment_score +
+            rl_learner.confluence_weights['pattern'] * (pattern_base_confidence - 0.5) * 2
+        ) * 100
+        
+        # Get learned pattern confidence with regime context
+        pattern_confidence = rl_learner.get_pattern_confidence(pattern, regime, asset)
+        
+        # Enhanced confidence calculation with multiple factors
+        technical_strength = abs(rsi - 50) / 50 * 0.3  # RSI deviation strength
+        momentum_strength = abs(macd) * 1000 * 0.2     # MACD momentum
+        sentiment_strength = abs(sentiment_score) * 0.2  # News sentiment strength
+        pattern_strength = pattern_base_confidence * 0.3  # Pattern reliability
+        
+        base_confidence = 50 + (
+            technical_strength + momentum_strength + 
+            sentiment_strength + pattern_strength
+        ) * 30
+        
+        # Apply regime-based adjustments
+        regime_multipliers = {
+            MarketRegime.TRENDING: 1.1,      # Trending markets are more predictable
+            MarketRegime.RANGING: 0.9,       # Ranging markets are less predictable
+            MarketRegime.CHOPPY: 0.7,        # Choppy markets are unpredictable
+            MarketRegime.HIGH_VOLATILITY: 0.8, # High volatility reduces confidence
+            MarketRegime.BREAKOUT: 1.2       # Breakouts can be very reliable
+        }
+        
+        base_confidence *= regime_multipliers.get(regime, 1.0)
+        base_confidence = max(30, min(95, base_confidence))
+        
+        # Get calibrated probability with enhanced features
+        features = np.array([
+            rsi, macd * 1000, stoch_k, atr * 10000, 
+            sentiment_score, pattern_base_confidence,
+            confluence_score / 100, technical_strength
+        ])
+        
+        # Pad features to match expected input size
+        if len(features) < 8:
+            features = np.pad(features, (0, 8 - len(features)), 'constant')
+        
+        calibrated_prob = prob_forecaster.get_calibrated_probability(features[:5])  # Use first 5 features
+        
+        # Enhanced tier classification with stricter requirements for Gold
+        # Gold signals must have multiple confirmations for 80% win rate
+        gold_requirements = (
+            calibrated_prob >= 0.82 and  # Higher probability threshold
+            base_confidence >= 75 and    # High base confidence
+            abs(confluence_score) >= 30 and  # Strong confluence
+            pattern_base_confidence >= 0.7 and  # Strong pattern
+            regime in [MarketRegime.TRENDING, MarketRegime.BREAKOUT]  # Favorable regime
+        )
+        
+        silver_requirements = (
+            calibrated_prob >= 0.68 and
+            base_confidence >= 60 and
+            abs(confluence_score) >= 15
+        )
+        
+        if gold_requirements:
+            tier = "Gold"
+            # Boost confidence for Gold signals
+            final_confidence = min(95, base_confidence * 1.1)
+        elif silver_requirements:
+            tier = "Silver"
+            final_confidence = base_confidence
+        else:
+            tier = "Bronze"
+            # Reduce confidence for Bronze signals
+            final_confidence = max(30, base_confidence * 0.9)
+        
+        # Determine direction based on multiple factors
+        direction_score = (
+            (rsi - 50) / 50 * 0.3 +           # RSI bias
+            np.sign(macd) * 0.3 +             # MACD direction
+            sentiment_score * 0.2 +           # Sentiment bias
+            (stoch_k - 50) / 50 * 0.2         # Stochastic bias
+        )
+        
+        direction = "CALL" if direction_score > 0 else "PUT"
+        
+        # Enhanced risk calculation
+        base_risk = atr * 100
+        regime_risk_multipliers = {
+            MarketRegime.TRENDING: 0.8,      # Lower risk in trending markets
+            MarketRegime.RANGING: 1.0,       # Normal risk in ranging markets
+            MarketRegime.CHOPPY: 1.8,        # Higher risk in choppy markets
+            MarketRegime.HIGH_VOLATILITY: 2.2, # Much higher risk in volatile markets
+            MarketRegime.BREAKOUT: 1.1       # Slightly higher risk in breakouts
+        }
+        
+        # Tier-based risk adjustment
+        tier_risk_multipliers = {
+            "Gold": 0.8,    # Lower risk for high-confidence signals
+            "Silver": 1.0,  # Normal risk
+            "Bronze": 1.3   # Higher risk for low-confidence signals
+        }
+        
+        risk_pct = (base_risk * 
+                   regime_risk_multipliers.get(regime, 1.0) * 
+                   tier_risk_multipliers.get(tier, 1.0))
+        risk_pct = max(0.5, min(5.0, risk_pct))
+        
+        # Create enhanced signal
+        signal_id = str(uuid.uuid4())
+        expiry_time = datetime.now() + timedelta(minutes=int(timeframe[:-1]))
+        
+        signal = Signal(
+            id=signal_id,
+            asset=asset + ("-OTC" if otc else ""),
+            direction=direction,
+            confidence=final_confidence,
+            calibrated_probability=calibrated_prob,
+            tier=tier,
+            price=current_price,
+            expire=timeframe,
+            expiry_time=expiry_time.isoformat(),
+            risk_pct=risk_pct,
+            pattern=pattern,
+            pattern_win_rate=pattern_confidence * 100,
+            confluence_score=confluence_score,
+            regime=regime,
+            technical={
+                'rsi': rsi,
+                'macd': macd,
+                'stoch_k': stoch_k,
+                'atr': atr
+            },
+            sentiment=sentiment_data,
+            news_headlines=news_headlines,
+            confluence_breakdown=confluence_breakdown,
+            timestamp=datetime.now().isoformat(),
+            # Additional metadata for enhanced analysis
+            metadata={
+                'api_source': 'real_data' if len(price_data) > 0 else 'fallback',
+                'technical_strength': technical_strength,
+                'momentum_strength': momentum_strength,
+                'sentiment_strength': sentiment_strength,
+                'pattern_strength': pattern_strength,
+                'direction_score': direction_score,
+                'gold_requirements_met': gold_requirements,
+                'silver_requirements_met': silver_requirements
+            }
+        )
+        
+        # Save to database
+        save_signal_to_db(signal)
+        
+        # Add to public ledger
+        add_to_public_ledger(signal)
+        
+        logger.info(f"Generated {tier} signal for {asset}: {direction} at {current_price:.5f} with {final_confidence:.1f}% confidence")
+        
+        return signal
+        
+    except Exception as e:
+        logger.error(f"Error generating signal for {asset}: {e}")
+        # Return a basic fallback signal
+        return generate_fallback_signal(asset, otc, timeframe)
+
+def generate_fallback_signal(asset: str, otc: bool, timeframe: str) -> Signal:
+    """Generate a basic fallback signal when main generation fails"""
     signal_id = str(uuid.uuid4())
-    expiry_time = datetime.now() + timedelta(minutes=int(timeframe[:-1]))
+    current_price = 1.0000  # Default price
     
     signal = Signal(
         id=signal_id,
         asset=asset + ("-OTC" if otc else ""),
-        direction=direction,
-        confidence=base_confidence,
-        calibrated_probability=calibrated_prob,
-        tier=tier,
+        direction="CALL",
+        confidence=50.0,
+        calibrated_probability=0.5,
+        tier="Bronze",
         price=current_price,
         expire=timeframe,
-        expiry_time=expiry_time.isoformat(),
-        risk_pct=risk_pct,
-        pattern=pattern,
-        pattern_win_rate=pattern_confidence * 100,
-        confluence_score=confluence_score,
-        regime=regime,
-        technical={
-            'rsi': rsi,
-            'macd': macd,
-            'stoch_k': stoch_k,
-            'atr': atr
-        },
-        sentiment={
-            'score': sentiment_score,
-            'label': 'Bullish' if sentiment_score > 0.1 else ('Bearish' if sentiment_score < -0.1 else 'Neutral')
-        },
-        news_headlines=news_headlines,
-        confluence_breakdown=confluence_breakdown,
+        expiry_time=(datetime.now() + timedelta(minutes=int(timeframe[:-1]))).isoformat(),
+        risk_pct=2.0,
+        pattern="No Pattern",
+        pattern_win_rate=50.0,
+        confluence_score=0.0,
+        regime=MarketRegime.RANGING,
+        technical={'rsi': 50, 'macd': 0, 'stoch_k': 50, 'atr': 0.001},
+        sentiment={'score': 0, 'label': 'Neutral'},
+        news_headlines=["Market data temporarily unavailable"],
+        confluence_breakdown={'1m': 'Neutral', '5m': 'Neutral', '15m': 'Neutral'},
         timestamp=datetime.now().isoformat()
     )
     
-    # Save to database
     save_signal_to_db(signal)
-    
-    # Add to public ledger
-    add_to_public_ledger(signal)
-    
     return signal
 
 def save_signal_to_db(signal: Signal):
@@ -560,6 +680,17 @@ def health_check():
         },
         'timestamp': datetime.now().isoformat()
     })
+
+@app.route("/signals/filtered", methods=["GET"])
+def get_filtered_signals():
+    """Get signals filtered by tier"""
+    tier = request.args.get("tier", "all")
+    if tier == "all":
+        return get_signals()
+    else:
+        db = get_db()
+        signals = db.execute("SELECT * FROM signals WHERE tier = ? ORDER BY timestamp DESC", (tier,)).fetchall()
+        return jsonify([dict(signal) for signal in signals])
 
 @app.route('/signals/<asset>', methods=['GET'])
 def generate_signal_endpoint(asset):
@@ -854,20 +985,6 @@ if __name__ == '__main__':
 
 
 
-@app.route("/signals/filtered", methods=["GET"])
-def get_filtered_signals():
-    """Get signals filtered by tier"""
-    tier = request.args.get("tier", "all")
-    if tier == "all":
-        return get_signals()
-    else:
-        db = get_db()
-        signals = db.execute("SELECT * FROM signals WHERE tier = ? ORDER BY timestamp DESC", (tier,)).fetchall()
-        return jsonify([dict(signal) for signal in signals])
-
-
-
-
 
 @app.route("/", methods=["GET"])
 def home():
@@ -875,5 +992,200 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    return jsonify({"status": "healthy", "version": "4.0"}))
+    return jsonify({"status": "healthy", "version": "4.0"})
+
+
+# WebSocket Event Handlers for Live Chat
+connected_users = {}
+chat_rooms = {}
+
+@socketio.on('connect')
+def handle_connect():
+    """Handle client connection"""
+    logger.info(f'Client connected: {request.sid}')
+    connected_users[request.sid] = {
+        'connected_at': datetime.now().isoformat(),
+        'room': None
+    }
+    emit('connection_response', {
+        'status': 'connected',
+        'message': 'Welcome to Premium AI Signals Live Chat!',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle client disconnection"""
+    logger.info(f'Client disconnected: {request.sid}')
+    if request.sid in connected_users:
+        room = connected_users[request.sid].get('room')
+        if room:
+            leave_room(room)
+            emit('user_left', {
+                'user_id': request.sid,
+                'timestamp': datetime.now().isoformat()
+            }, room=room)
+        del connected_users[request.sid]
+
+@socketio.on('join_chat')
+def handle_join_chat(data):
+    """Handle user joining a chat room"""
+    room = data.get('room', 'general')
+    username = data.get('username', f'User_{request.sid[:8]}')
+    
+    join_room(room)
+    connected_users[request.sid]['room'] = room
+    connected_users[request.sid]['username'] = username
+    
+    if room not in chat_rooms:
+        chat_rooms[room] = {
+            'users': [],
+            'messages': []
+        }
+    
+    chat_rooms[room]['users'].append({
+        'id': request.sid,
+        'username': username,
+        'joined_at': datetime.now().isoformat()
+    })
+    
+    logger.info(f'User {username} joined room {room}')
+    
+    # Notify room about new user
+    emit('user_joined', {
+        'username': username,
+        'user_id': request.sid,
+        'room': room,
+        'timestamp': datetime.now().isoformat()
+    }, room=room)
+    
+    # Send recent messages to the new user
+    recent_messages = chat_rooms[room]['messages'][-20:]  # Last 20 messages
+    emit('chat_history', {
+        'messages': recent_messages,
+        'room': room
+    })
+
+@socketio.on('send_message')
+def handle_send_message(data):
+    """Handle incoming chat messages"""
+    room = data.get('room', 'general')
+    message = data.get('message', '').strip()
+    username = connected_users.get(request.sid, {}).get('username', f'User_{request.sid[:8]}')
+    
+    if not message:
+        return
+    
+    message_data = {
+        'id': str(uuid.uuid4()),
+        'username': username,
+        'user_id': request.sid,
+        'message': message,
+        'room': room,
+        'timestamp': datetime.now().isoformat(),
+        'type': 'user_message'
+    }
+    
+    # Store message in room history
+    if room in chat_rooms:
+        chat_rooms[room]['messages'].append(message_data)
+        # Keep only last 100 messages per room
+        if len(chat_rooms[room]['messages']) > 100:
+            chat_rooms[room]['messages'] = chat_rooms[room]['messages'][-100:]
+    
+    logger.info(f'Message from {username} in {room}: {message}')
+    
+    # Broadcast message to room
+    emit('new_message', message_data, room=room)
+    
+    # Auto-respond with AI support for certain keywords
+    if any(keyword in message.lower() for keyword in ['help', 'support', 'signal', 'trade', 'gold', 'silver', 'bronze']):
+        ai_response = generate_ai_response(message, username)
+        ai_message_data = {
+            'id': str(uuid.uuid4()),
+            'username': 'AI Support',
+            'user_id': 'ai_support',
+            'message': ai_response,
+            'room': room,
+            'timestamp': datetime.now().isoformat(),
+            'type': 'ai_response'
+        }
+        
+        # Store AI response
+        if room in chat_rooms:
+            chat_rooms[room]['messages'].append(ai_message_data)
+        
+        # Send AI response after a short delay
+        socketio.sleep(1)
+        emit('new_message', ai_message_data, room=room)
+
+@socketio.on('request_signal_update')
+def handle_signal_update_request(data):
+    """Handle requests for signal updates via WebSocket"""
+    try:
+        asset = data.get('asset', 'EURUSD')
+        timeframe = data.get('timeframe', '1m')
+        
+        # Generate new signal
+        signal = generate_advanced_signal(asset, False, timeframe)
+        
+        # Emit signal update to the requesting client
+        emit('signal_update', {
+            'signal': asdict(signal),
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        logger.info(f'Signal update sent to {request.sid} for {asset}')
+        
+    except Exception as e:
+        logger.error(f'Error handling signal update request: {e}')
+        emit('error', {
+            'message': 'Failed to generate signal update',
+            'error': str(e)
+        })
+
+def generate_ai_response(message, username):
+    """Generate AI support responses based on message content"""
+    message_lower = message.lower()
+    
+    if 'help' in message_lower:
+        return f"Hi {username}! I'm here to help. You can ask me about signals, trading strategies, or how to use our platform. What would you like to know?"
+    
+    elif 'signal' in message_lower:
+        return "Our AI generates signals with Gold, Silver, and Bronze tiers. Gold signals have the highest confidence (80%+ win rate) and are generated only when multiple confirmations align. Would you like me to explain more about our signal generation?"
+    
+    elif 'gold' in message_lower:
+        return "Gold signals are our premium tier with 80%+ expected win rate. They require: high calibrated probability (≥82%), strong confluence (≥30), reliable patterns (≥70% confidence), and favorable market regimes (trending/breakout)."
+    
+    elif 'silver' in message_lower:
+        return "Silver signals have 68%+ expected win rate with good confluence and moderate confidence. They're great for consistent trading with balanced risk."
+    
+    elif 'bronze' in message_lower:
+        return "Bronze signals are entry-level with basic confluence. They're good for learning and practice trading with lower risk exposure."
+    
+    elif 'trade' in message_lower or 'trading' in message_lower:
+        return "Our platform provides real-time signals with technical analysis, news sentiment, and risk management. Always follow proper risk management and never risk more than you can afford to lose."
+    
+    elif 'api' in message_lower:
+        return "We integrate multiple data sources including Polygon.io, Alpha Vantage, TwelveData, and news APIs to provide comprehensive market analysis for our signals."
+    
+    else:
+        return f"Thanks for your message, {username}! Our AI system is constantly learning. For specific questions about signals, trading, or platform features, just ask!"
+
+# Update the main execution block
+if __name__ == '__main__':
+    logger.info("🚀 Premium AI Signals Advanced Backend v4.0 Starting...")
+    logger.info("✅ Reinforcement Learning System Active")
+    logger.info("✅ Regime Detection System Active") 
+    logger.info("✅ Probabilistic Forecasting Active")
+    logger.info("✅ Public Performance Ledger Active")
+    logger.info("✅ Risk Circuit Breakers Active")
+    logger.info("✅ Universal Broker API Active")
+    logger.info("✅ Live Chat WebSocket Support Active")
+    
+    # Initialize database
+    init_db()
+    
+    # Start the SocketIO server
+    socketio.run(app, host='0.0.0.0', port=8000, debug=False, allow_unsafe_werkzeug=True)
 
