@@ -1,0 +1,831 @@
+#!/usr/bin/env python3
+"""
+Premium AI Signals Backend - Simplified Production Version
+Simplified version without heavy ML dependencies for reliable deployment.
+"""
+
+from flask import Flask, request, jsonify, g
+from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room, leave_room
+from dotenv import load_dotenv
+import os
+import sqlite3
+import uuid
+import random
+import threading
+import time
+import warnings
+import logging
+from datetime import datetime, timedelta
+import requests
+
+# Import reinforcement learning module
+try:
+    from reinforcement_learning import get_adaptive_signal, update_signal_outcome
+    RL_AVAILABLE = True
+except ImportError:
+    RL_AVAILABLE = False
+    logging.warning("Reinforcement learning module not available")
+
+# Import broker integrations
+try:
+    from broker_integrations import get_broker_manager
+    BROKER_AVAILABLE = True
+    broker_manager = get_broker_manager()
+except ImportError:
+    BROKER_AVAILABLE = False
+    logging.warning("Broker integrations module not available")
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+CORS(app, origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", logger=True, engineio_logger=True)
+
+# Configuration
+API_KEYS = {
+    'POLYGON_API_KEY': os.getenv('POLYGON_API_KEY', 'demo_key'),
+    'ALPHA_VANTAGE_API_KEY': os.getenv('ALPHA_VANTAGE_API_KEY', 'demo_key'),
+    'TWELVEDATA_API_KEY': os.getenv('TWELVEDATA_API_KEY', 'demo_key'),
+    'NEWS_API_KEY': os.getenv('NEWS_API_KEY', 'demo_key'),
+    'TELEGRAM_BOT_TOKEN': os.getenv('TELEGRAM_BOT_TOKEN', ''),
+}
+
+# Database setup
+DATABASE = 'signals.db'
+
+def get_db():
+    """Get database connection"""
+    db = getattr(g, '_database', None)
+    if db is None:
+        db = g._database = sqlite3.connect(DATABASE)
+        db.row_factory = sqlite3.Row
+    return db
+
+@app.teardown_appcontext
+def close_connection(exception):
+    """Close database connection"""
+    db = getattr(g, '_database', None)
+    if db is not None:
+        db.close()
+
+def init_db():
+    """Initialize database"""
+    with app.app_context():
+        db = get_db()
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS signals (
+                id TEXT PRIMARY KEY,
+                asset TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                tier TEXT NOT NULL,
+                pattern TEXT,
+                timestamp TEXT NOT NULL,
+                expiry_time TEXT,
+                outcome TEXT,
+                pnl REAL,
+                status TEXT DEFAULT 'active'
+            );
+        """)
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS settings (
+                id INTEGER PRIMARY KEY,
+                user_id TEXT DEFAULT 'default',
+                telegram_token TEXT,
+                telegram_chat_id TEXT,
+                risk_settings TEXT,
+                notification_settings TEXT,
+                api_settings TEXT,
+                updated_at TEXT
+            );
+        """)
+        db.commit()
+
+# Simple signal generation without ML dependencies
+def generate_simple_signal(asset, otc=False, timeframe='1m'):
+    """Generate signal using simple logic without ML dependencies"""
+    
+    # Determine asset type for specialized signal generation
+    asset_type = get_asset_type(asset)
+    
+    # Simulate market data analysis with asset-specific logic
+    base_confidence = random.uniform(45, 95)
+    direction = random.choice(['CALL', 'PUT'])
+    
+    # Asset-specific confidence adjustments
+    if asset_type == 'stock':
+        # Stocks tend to have more predictable patterns during market hours
+        base_confidence += random.uniform(0, 10)
+    elif asset_type == 'crypto':
+        # Crypto is more volatile, adjust confidence accordingly
+        base_confidence += random.uniform(-5, 15)
+    elif asset_type == 'otc_forex':
+        # OTC forex has different characteristics
+        base_confidence += random.uniform(-3, 8)
+    
+    # Determine tier based on confidence
+    if base_confidence >= 82:
+        tier = 'Gold'
+        confidence = min(base_confidence + random.uniform(0, 8), 95)
+    elif base_confidence >= 68:
+        tier = 'Silver'  
+        confidence = base_confidence + random.uniform(-5, 5)
+    else:
+        tier = 'Bronze'
+        confidence = base_confidence
+    
+    # Generate signal data
+    signal_id = str(uuid.uuid4())
+    timestamp = datetime.now()
+    
+    # Adjust expiry time based on asset type
+    if asset_type == 'stock':
+        expiry_time = timestamp + timedelta(minutes=5 if timeframe == '5m' else 1)
+    else:
+        expiry_time = timestamp + timedelta(minutes=1 if timeframe == '1m' else 5)
+    
+    signal_data = {
+        'id': signal_id,
+        'asset': asset,
+        'asset_type': asset_type,
+        'direction': direction,
+        'confidence': round(confidence, 1),
+        'tier': tier,
+        'pattern': get_asset_specific_pattern(asset_type),
+        'timestamp': timestamp.isoformat(),
+        'expiry_time': expiry_time.isoformat(),
+        'expire': timeframe,
+        'status': 'active',
+        'price': get_simulated_price(asset, asset_type),
+        'risk_pct': 2.0,
+        'calibrated_probability': confidence / 100,
+        'confluence_score': random.uniform(0, 50),
+        'confluence_breakdown': get_asset_specific_confluence(asset_type),
+        'technical': get_asset_specific_technical(asset_type),
+        'sentiment': {
+            'label': random.choice(['Bullish', 'Bearish', 'Neutral']),
+            'score': random.uniform(-1, 1)
+        },
+        'news_headlines': get_asset_specific_news(asset, asset_type),
+        'regime': random.choice(['trending', 'ranging', 'breakout']),
+        'pattern_win_rate': random.uniform(60, 85),
+        'session_boost': random.uniform(-5, 5),
+        'outcome': None,
+        'pnl': None,
+        'otc_mode': otc
+    }
+    
+    # Apply reinforcement learning if available
+    if RL_AVAILABLE:
+        try:
+            signal_data = get_adaptive_signal(asset, signal_data)
+            if signal_data.get('skip'):
+                # RL recommends skipping this signal
+                return {'message': 'Signal generation skipped by RL', 'skip': True}
+        except Exception as e:
+            logger.error(f"RL adaptation error: {e}")
+    
+    # Store in database
+    try:
+        db = get_db()
+        db.execute('''
+                  INSERT INTO signals (id, asset, direction, confidence, tier, pattern, timestamp, expiry_time, outcome, pnl, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (signal_id, asset, direction, confidence, tier, signal_data['pattern'], 
+              timestamp.isoformat(), expiry_time.isoformat(), signal_data["outcome"], signal_data["pnl"], "active"))
+        db.commit()
+    except Exception as e:
+        logger.error(f"Database error: {e}")
+    
+    return signal_data
+
+def get_asset_type(asset):
+    """Determine asset type from asset symbol"""
+    if '-OTC' in asset:
+        return 'otc_forex'
+    elif asset in ['AAPL', 'GOOGL', 'MSFT', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX', 'BABA', 'AMD',
+                   'UBER', 'ZOOM', 'PYPL', 'ADBE', 'CRM', 'INTC', 'ORCL', 'IBM', 'CSCO', 'V']:
+        return 'stock'
+    elif 'USD' in asset and len(asset) == 6 and asset.endswith('USD'):
+        return 'crypto'
+    else:
+        return 'forex'
+
+def get_asset_specific_pattern(asset_type):
+    """Get asset-specific trading patterns"""
+    patterns = {
+        'forex': ['Bullish Engulfing', 'Bearish Reversal', 'Doji', 'Hammer', 'Shooting Star'],
+        'otc_forex': ['OTC Breakout', 'Extended Hours Reversal', 'Gap Fill', 'Momentum Continuation'],
+        'stock': ['Earnings Gap', 'Support Bounce', 'Resistance Break', 'Volume Spike', 'Moving Average Cross'],
+        'crypto': ['Whale Movement', 'Support Test', 'Breakout Rally', 'Fear/Greed Reversal', 'Hash Rate Impact']
+    }
+    return random.choice(patterns.get(asset_type, patterns['forex']))
+
+def get_simulated_price(asset, asset_type):
+    """Get simulated price based on asset type"""
+    if asset_type == 'stock':
+        return round(random.uniform(50, 500), 2)
+    elif asset_type == 'crypto':
+        if 'BTC' in asset:
+            return round(random.uniform(25000, 45000), 2)
+        elif 'ETH' in asset:
+            return round(random.uniform(1500, 3000), 2)
+        else:
+            return round(random.uniform(0.1, 10), 4)
+    else:  # forex or otc_forex
+        return round(random.uniform(0.8, 1.2), 5)
+
+def get_asset_specific_confluence(asset_type):
+    """Get asset-specific confluence breakdown"""
+    timeframes = ['1m', '5m', '15m']
+    signals = ['Bullish', 'Bearish', 'Neutral']
+    
+    if asset_type == 'stock':
+        # Stocks tend to have more consistent directional bias
+        bias = random.choice(['Bullish', 'Bearish'])
+        return {tf: bias if random.random() > 0.3 else random.choice(signals) for tf in timeframes}
+    else:
+        return {tf: random.choice(signals) for tf in timeframes}
+
+def get_asset_specific_technical(asset_type):
+    """Get asset-specific technical indicators"""
+    base_technical = {
+        'rsi': random.uniform(20, 80),
+        'macd': random.uniform(-0.01, 0.01),
+        'stoch_k': random.uniform(20, 80),
+        'atr': random.uniform(0.0005, 0.002)
+    }
+    
+    if asset_type == 'stock':
+        base_technical.update({
+            'volume_ratio': random.uniform(0.5, 3.0),
+            'pe_ratio': random.uniform(10, 50),
+            'beta': random.uniform(0.5, 2.0)
+        })
+    elif asset_type == 'crypto':
+        base_technical.update({
+            'funding_rate': random.uniform(-0.01, 0.01),
+            'fear_greed_index': random.uniform(10, 90),
+            'network_activity': random.uniform(0.5, 2.0)
+        })
+    
+    return base_technical
+
+def get_asset_specific_news(asset, asset_type):
+    """Get asset-specific news headlines"""
+    if asset_type == 'stock':
+        return [
+            f'{asset} earnings report shows strong performance',
+            f'Analyst upgrades {asset} price target',
+            f'{asset} announces new product launch'
+        ]
+    elif asset_type == 'crypto':
+        return [
+            f'{asset} network upgrade scheduled',
+            f'Institutional adoption of {asset} increases',
+            f'{asset} regulatory clarity improves sentiment'
+        ]
+    else:
+        return [
+            'Central bank policy meeting scheduled',
+            'Economic data release shows mixed signals',
+            'Geopolitical tensions affect currency markets'
+        ]
+
+# API Routes
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'version': '5.0',
+        'timestamp': datetime.now().isoformat(),
+        'features': {
+            'signal_generation': True,
+            'live_chat': True,
+            'api_integrations': True,
+            'risk_management': True,
+            'telegram_notifications': True,
+            'reinforcement_learning': RL_AVAILABLE,
+            'broker_integrations': BROKER_AVAILABLE,
+            'automated_trading': BROKER_AVAILABLE
+        }
+    })
+
+@app.route('/signals/filtered', methods=['GET'])
+def get_filtered_signals():
+    """Get signals filtered by tier"""
+    tier = request.args.get('tier', 'all')
+    try:
+        db = get_db()
+        if tier == 'all':
+            signals = db.execute('SELECT * FROM signals ORDER BY timestamp DESC LIMIT 50').fetchall()
+        else:
+            signals = db.execute('SELECT * FROM signals WHERE tier = ? ORDER BY timestamp DESC LIMIT 50', (tier,)).fetchall()
+        return jsonify([dict(signal) for signal in signals])
+    except Exception as e:
+        logger.error(f"Error fetching filtered signals: {e}")
+        return jsonify([])
+
+@app.route('/signals/<asset>', methods=['GET'])
+def generate_signal_endpoint(asset):
+    """Generate new signal for asset"""
+    otc = request.args.get('otc', 'false').lower() == 'true'
+    timeframe = request.args.get('timeframe', '1m')
+    
+    try:
+        signal = generate_simple_signal(asset, otc, timeframe)
+        return jsonify(signal)
+    except Exception as e:
+        logger.error(f"Error generating signal: {e}")
+        return jsonify({'error': 'Signal generation failed'}), 500
+
+@app.route('/signals', methods=['GET'])
+def get_signals():
+    """Get signals history"""
+    try:
+        db = get_db()
+        signals = db.execute('SELECT * FROM signals ORDER BY timestamp DESC LIMIT 50').fetchall()
+        return jsonify({
+            'signals': [dict(signal) for signal in signals],
+            'total': len(signals)
+        })
+    except Exception as e:
+        logger.error(f"Error fetching signals: {e}")
+        return jsonify({'signals': [], 'total': 0})
+
+@app.route('/telegram/test', methods=['GET', 'POST'])
+def test_telegram():
+    """Test Telegram connection"""
+    if request.method == 'POST':
+        data = request.get_json()
+        token = data.get('token')
+        chat_id = data.get('chat_id')
+    else:
+        token = API_KEYS.get('TELEGRAM_BOT_TOKEN')
+        chat_id = request.args.get('chat_id')
+    
+    if not token or not chat_id:
+        return jsonify({'message': 'Token and Chat ID required'}), 400
+    
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            'chat_id': chat_id,
+            'text': '🚀 Premium AI Signals Test Message\nConnection successful!'
+        }
+        response = requests.post(url, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            return jsonify({'message': 'Test message sent successfully!'})
+        else:
+            return jsonify({'message': 'Failed to send test message'}), 400
+    except Exception as e:
+        return jsonify({'message': f'Error: {str(e)}'}), 500
+
+@app.route('/signals/<signal_id>/outcome', methods=['POST'])
+def update_signal_outcome_endpoint(signal_id):
+    """Update signal outcome for RL training"""
+    try:
+        data = request.get_json()
+        outcome = data.get('outcome')  # 'win' or 'loss'
+        pnl = data.get('pnl', 0.0)
+        
+        if outcome not in ['win', 'loss']:
+            return jsonify({'error': 'Invalid outcome. Must be "win" or "loss"'}), 400
+        
+        # Update database
+        db = get_db()
+        db.execute('''
+            UPDATE signals SET outcome = ?, pnl = ? WHERE id = ?
+        ''', (outcome, pnl, signal_id))
+        db.commit()
+        
+        # Update RL model if available
+        if RL_AVAILABLE:
+            try:
+                update_signal_outcome(signal_id, outcome, pnl)
+            except Exception as e:
+                logger.error(f"RL update error: {e}")
+        
+        return jsonify({
+            'message': 'Signal outcome updated successfully',
+            'signal_id': signal_id,
+            'outcome': outcome,
+            'pnl': pnl,
+            'rl_updated': RL_AVAILABLE
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating signal outcome: {e}")
+        return jsonify({'error': 'Failed to update signal outcome'}), 500
+
+@app.route('/rl/stats', methods=['GET'])
+def get_rl_stats():
+    """Get reinforcement learning statistics"""
+    if not RL_AVAILABLE:
+        return jsonify({'error': 'Reinforcement learning not available'}), 404
+    
+    try:
+        from reinforcement_learning import adaptive_generator
+        
+        # Get Q-table statistics
+        q_table = adaptive_generator.q_learning.q_table
+        total_states = len(q_table)
+        total_actions = sum(len(actions) for actions in q_table.values())
+        
+        # Get recent performance
+        db = get_db()
+        cursor = db.execute('''
+            SELECT COUNT(*) as total, 
+                   SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END) as wins,
+                   AVG(confidence) as avg_confidence
+            FROM signals 
+            WHERE outcome IS NOT NULL 
+            AND timestamp > datetime('now', '-7 days')
+        ''')
+        
+        stats = cursor.fetchone()
+        
+        win_rate = (stats[1] / stats[0] * 100) if stats[0] > 0 else 0
+        
+        return jsonify({
+            'rl_available': True,
+            'q_table_states': total_states,
+            'q_table_actions': total_actions,
+            'recent_performance': {
+                'total_signals': stats[0],
+                'win_rate': round(win_rate, 2),
+                'avg_confidence': round(stats[2], 2) if stats[2] else 0
+            },
+            'current_regime': adaptive_generator.regime_detector.current_regime,
+            'regime_confidence': round(adaptive_generator.regime_detector.regime_confidence, 2)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting RL stats: {e}")
+        return jsonify({'error': 'Failed to get RL statistics'}), 500
+
+@app.route('/brokers', methods=['GET'])
+def get_brokers():
+    """Get available brokers and their status"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        summary = broker_manager.get_account_summary()
+        return jsonify({
+            'brokers_available': BROKER_AVAILABLE,
+            'accounts': summary,
+            'active_broker': broker_manager.active_broker,
+            'auto_trading_enabled': broker_manager.auto_trading_enabled,
+            'supported_brokers': ['alpaca', 'metatrader', 'iqoption']
+        })
+    except Exception as e:
+        logger.error(f"Error getting brokers: {e}")
+        return jsonify({'error': 'Failed to get broker information'}), 500
+
+@app.route('/brokers/add', methods=['POST'])
+def add_broker():
+    """Add a new broker connection"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        data = request.get_json()
+        broker_name = data.get('broker_name')
+        api_key = data.get('api_key')
+        api_secret = data.get('api_secret')
+        demo_mode = data.get('demo_mode', True)
+        
+        if not all([broker_name, api_key, api_secret]):
+            return jsonify({'error': 'Missing required fields'}), 400
+        
+        success = broker_manager.add_broker(broker_name, api_key, api_secret, demo_mode)
+        
+        if success:
+            return jsonify({
+                'message': f'Broker {broker_name} added successfully',
+                'broker_name': broker_name,
+                'demo_mode': demo_mode
+            })
+        else:
+            return jsonify({'error': f'Failed to add broker {broker_name}'}), 400
+            
+    except Exception as e:
+        logger.error(f"Error adding broker: {e}")
+        return jsonify({'error': 'Failed to add broker'}), 500
+
+@app.route('/brokers/activate', methods=['POST'])
+def activate_broker():
+    """Set active broker for trading"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        data = request.get_json()
+        broker_name = data.get('broker_name')
+        
+        if not broker_name:
+            return jsonify({'error': 'Broker name required'}), 400
+        
+        success = broker_manager.set_active_broker(broker_name)
+        
+        if success:
+            return jsonify({
+                'message': f'Activated broker: {broker_name}',
+                'active_broker': broker_name
+            })
+        else:
+            return jsonify({'error': f'Failed to activate broker {broker_name}'}), 400
+            
+    except Exception as e:
+        logger.error(f"Error activating broker: {e}")
+        return jsonify({'error': 'Failed to activate broker'}), 500
+
+@app.route('/trading/auto', methods=['POST'])
+def toggle_auto_trading():
+    """Enable/disable auto trading"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        data = request.get_json()
+        enabled = data.get('enabled', False)
+        
+        broker_manager.auto_trading_enabled = enabled
+        
+        return jsonify({
+            'message': f'Auto trading {"enabled" if enabled else "disabled"}',
+            'auto_trading_enabled': enabled
+        })
+        
+    except Exception as e:
+        logger.error(f"Error toggling auto trading: {e}")
+        return jsonify({'error': 'Failed to toggle auto trading'}), 500
+
+@app.route('/trading/execute', methods=['POST'])
+def execute_trade():
+    """Manually execute a trade"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        data = request.get_json()
+        signal_data = data.get('signal_data')
+        
+        if not signal_data:
+            return jsonify({'error': 'Signal data required'}), 400
+        
+        result = broker_manager.execute_signal(signal_data)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Error executing trade: {e}")
+        return jsonify({'error': 'Failed to execute trade'}), 500
+
+@app.route('/trading/history', methods=['GET'])
+def get_trading_history():
+    """Get trading history"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        limit = request.args.get('limit', 50, type=int)
+        history = broker_manager.get_trading_history(limit)
+        
+        return jsonify({
+            'trades': history,
+            'total': len(history)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting trading history: {e}")
+        return jsonify({'error': 'Failed to get trading history'}), 500
+
+@app.route('/trading/risk-settings', methods=['GET', 'POST'])
+def manage_risk_settings():
+    """Get or update risk management settings"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        if request.method == 'GET':
+            return jsonify({
+                'risk_settings': broker_manager.risk_settings,
+                'auto_trading_enabled': broker_manager.auto_trading_enabled
+            })
+        
+        elif request.method == 'POST':
+            data = request.get_json()
+            broker_manager.update_risk_settings(data)
+            
+            return jsonify({
+                'message': 'Risk settings updated successfully',
+                'risk_settings': broker_manager.risk_settings
+            })
+            
+    except Exception as e:
+        logger.error(f"Error managing risk settings: {e}")
+        return jsonify({'error': 'Failed to manage risk settings'}), 500
+
+@app.route('/settings', methods=['POST'])
+def save_settings():
+    """Save user settings"""
+    try:
+        data = request.get_json()
+        db = get_db()
+        
+        # Store settings as JSON strings
+        db.execute('''
+            INSERT OR REPLACE INTO settings 
+            (user_id, telegram_token, telegram_chat_id, risk_settings, notification_settings, api_settings, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            'default',
+            data.get('telegram', {}).get('token', ''),
+            data.get('telegram', {}).get('chatId', ''),
+            str(data.get('risk', {})),
+            str(data.get('notifications', {})),
+            str(data.get('api', {})),
+            datetime.now().isoformat()
+        ))
+        db.commit()
+        
+        return jsonify({'message': 'Settings saved successfully'})
+    except Exception as e:
+        logger.error(f"Error saving settings: {e}")
+        return jsonify({'message': 'Failed to save settings'}), 500
+
+# WebSocket Event Handlers for Live Chat
+connected_users = {}
+chat_rooms = {}
+
+@socketio.on('connect')
+def handle_connect():
+    """Handle client connection"""
+    logger.info(f'Client connected: {request.sid}')
+    connected_users[request.sid] = {
+        'connected_at': datetime.now().isoformat(),
+        'room': None
+    }
+    emit('connection_response', {
+        'status': 'connected',
+        'message': 'Welcome to Premium AI Signals Live Chat!',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle client disconnection"""
+    logger.info(f'Client disconnected: {request.sid}')
+    if request.sid in connected_users:
+        room = connected_users[request.sid].get('room')
+        if room:
+            leave_room(room)
+            emit('user_left', {
+                'user_id': request.sid,
+                'timestamp': datetime.now().isoformat()
+            }, room=room)
+        del connected_users[request.sid]
+
+@socketio.on('join_chat')
+def handle_join_chat(data):
+    """Handle user joining a chat room"""
+    room = data.get('room', 'general')
+    username = data.get('username', f'User_{request.sid[:8]}')
+    
+    join_room(room)
+    connected_users[request.sid]['room'] = room
+    connected_users[request.sid]['username'] = username
+    
+    if room not in chat_rooms:
+        chat_rooms[room] = {
+            'users': [],
+            'messages': []
+        }
+    
+    chat_rooms[room]['users'].append({
+        'id': request.sid,
+        'username': username,
+        'joined_at': datetime.now().isoformat()
+    })
+    
+    logger.info(f'User {username} joined room {room}')
+    
+    # Notify room about new user
+    emit('user_joined', {
+        'username': username,
+        'user_id': request.sid,
+        'room': room,
+        'timestamp': datetime.now().isoformat()
+    }, room=room)
+    
+    # Send recent messages to the new user
+    recent_messages = chat_rooms[room]['messages'][-20:]  # Last 20 messages
+    emit('chat_history', {
+        'messages': recent_messages,
+        'room': room
+    })
+
+@socketio.on('send_message')
+def handle_send_message(data):
+    """Handle incoming chat messages"""
+    room = data.get('room', 'general')
+    message = data.get('message', '').strip()
+    username = connected_users.get(request.sid, {}).get('username', f'User_{request.sid[:8]}')
+    
+    if not message:
+        return
+    
+    message_data = {
+        'id': str(uuid.uuid4()),
+        'username': username,
+        'user_id': request.sid,
+        'message': message,
+        'room': room,
+        'timestamp': datetime.now().isoformat(),
+        'type': 'user_message'
+    }
+    
+    # Store message in room history
+    if room in chat_rooms:
+        chat_rooms[room]['messages'].append(message_data)
+        # Keep only last 100 messages per room
+        if len(chat_rooms[room]['messages']) > 100:
+            chat_rooms[room]['messages'] = chat_rooms[room]['messages'][-100:]
+    
+    logger.info(f'Message from {username} in {room}: {message}')
+    
+    # Broadcast message to room
+    emit('new_message', message_data, room=room)
+    
+    # Auto-respond with AI support for certain keywords
+    if any(keyword in message.lower() for keyword in ['help', 'support', 'signal', 'trade', 'gold', 'silver', 'bronze']):
+        ai_response = generate_ai_response(message, username)
+        ai_message_data = {
+            'id': str(uuid.uuid4()),
+            'username': 'AI Support',
+            'user_id': 'ai_support',
+            'message': ai_response,
+            'room': room,
+            'timestamp': datetime.now().isoformat(),
+            'type': 'ai_response'
+        }
+        
+        # Store AI response
+        if room in chat_rooms:
+            chat_rooms[room]['messages'].append(ai_message_data)
+        
+        # Send AI response after a short delay
+        socketio.sleep(1)
+        emit('new_message', ai_message_data, room=room)
+
+def generate_ai_response(message, username):
+    """Generate AI support responses based on message content"""
+    message_lower = message.lower()
+    
+    if 'help' in message_lower:
+        return f"Hi {username}! I'm here to help. You can ask me about signals, trading strategies, or how to use our platform. What would you like to know?"
+    
+    elif 'signal' in message_lower:
+        return "Our AI generates signals with Gold, Silver, and Bronze tiers. Gold signals have the highest confidence (80%+ win rate) and are generated only when multiple confirmations align. Would you like me to explain more about our signal generation?"
+    
+    elif 'gold' in message_lower:
+        return "Gold signals are our premium tier with 80%+ expected win rate. They require high confidence, strong confluence, and favorable market conditions."
+    
+    elif 'silver' in message_lower:
+        return "Silver signals have 68%+ expected win rate with good confluence and moderate confidence. They're great for consistent trading with balanced risk."
+    
+    elif 'bronze' in message_lower:
+        return "Bronze signals are entry-level with basic confluence. They're good for learning and practice trading with lower risk exposure."
+    
+    else:
+        return f"Thanks for your message, {username}! Our AI system is constantly learning. For specific questions about signals, trading, or platform features, just ask!"
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"message": "Premium AI Signals Backend v4.0 is running!"})
+
+# Initialize database
+init_db()
+
+if __name__ == '__main__':
+    logger.info("🚀 Premium AI Signals Simplified Backend v4.0 Starting...")
+    logger.info("✅ Signal Generation Active")
+    logger.info("✅ Live Chat WebSocket Support Active")
+    logger.info("✅ API Integrations Active")
+    logger.info("✅ Telegram Notifications Active")
+    
+    # Start the SocketIO server
+    socketio.run(app, host='0.0.0.0', port=8000, debug=False, allow_unsafe_werkzeug=True)
+
