@@ -158,10 +158,10 @@ def generate_simple_signal(asset, otc=False, timeframe='1m'):
     try:
         db = get_db()
         db.execute('''
-            INSERT INTO signals (id, asset, direction, confidence, tier, pattern, timestamp, expiry_time, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  INSERT INTO signals (id, asset, direction, confidence, tier, pattern, timestamp, expiry_time, outcome, pnl, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (signal_id, asset, direction, confidence, tier, signal_data['pattern'], 
-              timestamp.isoformat(), expiry_time.isoformat(), 'active'))
+              timestamp.isoformat(), expiry_time.isoformat(), signal_data["outcome"], signal_data["pnl"], "active"))
         db.commit()
     except Exception as e:
         logger.error(f"Database error: {e}")
