@@ -5,7 +5,7 @@ Production deployment entry point for the Flask application with SocketIO suppor
 """
 
 import os
-from advanced_enhanced_app import app, socketio
+from simple_app import app, socketio
 
 if __name__ == '__main__':
     # For production deployment
