@@ -27,6 +27,15 @@ except ImportError:
     RL_AVAILABLE = False
     logging.warning("Reinforcement learning module not available")
 
+# Import broker integrations
+try:
+    from broker_integrations import get_broker_manager
+    BROKER_AVAILABLE = True
+    broker_manager = get_broker_manager()
+except ImportError:
+    BROKER_AVAILABLE = False
+    logging.warning("Broker integrations module not available")
+
 # Suppress warnings
 warnings.filterwarnings('ignore')
 
@@ -193,14 +202,17 @@ def health_check():
     """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
-        'version': '4.0',
+        'version': '5.0',
         'timestamp': datetime.now().isoformat(),
         'features': {
             'signal_generation': True,
             'live_chat': True,
             'api_integrations': True,
             'risk_management': True,
-            'telegram_notifications': True
+            'telegram_notifications': True,
+            'reinforcement_learning': RL_AVAILABLE,
+            'broker_integrations': BROKER_AVAILABLE,
+            'automated_trading': BROKER_AVAILABLE
         }
     })
 
@@ -357,6 +369,169 @@ def get_rl_stats():
     except Exception as e:
         logger.error(f"Error getting RL stats: {e}")
         return jsonify({'error': 'Failed to get RL statistics'}), 500
+
+@app.route('/brokers', methods=['GET'])
+def get_brokers():
+    """Get available brokers and their status"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        summary = broker_manager.get_account_summary()
+        return jsonify({
+            'brokers_available': BROKER_AVAILABLE,
+            'accounts': summary,
+            'active_broker': broker_manager.active_broker,
+            'auto_trading_enabled': broker_manager.auto_trading_enabled,
+            'supported_brokers': ['alpaca', 'metatrader', 'iqoption']
+        })
+    except Exception as e:
+        logger.error(f"Error getting brokers: {e}")
+        return jsonify({'error': 'Failed to get broker information'}), 500
+
+@app.route('/brokers/add', methods=['POST'])
+def add_broker():
+    """Add a new broker connection"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        data = request.get_json()
+        broker_name = data.get('broker_name')
+        api_key = data.get('api_key')
+        api_secret = data.get('api_secret')
+        demo_mode = data.get('demo_mode', True)
+        
+        if not all([broker_name, api_key, api_secret]):
+            return jsonify({'error': 'Missing required fields'}), 400
+        
+        success = broker_manager.add_broker(broker_name, api_key, api_secret, demo_mode)
+        
+        if success:
+            return jsonify({
+                'message': f'Broker {broker_name} added successfully',
+                'broker_name': broker_name,
+                'demo_mode': demo_mode
+            })
+        else:
+            return jsonify({'error': f'Failed to add broker {broker_name}'}), 400
+            
+    except Exception as e:
+        logger.error(f"Error adding broker: {e}")
+        return jsonify({'error': 'Failed to add broker'}), 500
+
+@app.route('/brokers/activate', methods=['POST'])
+def activate_broker():
+    """Set active broker for trading"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        data = request.get_json()
+        broker_name = data.get('broker_name')
+        
+        if not broker_name:
+            return jsonify({'error': 'Broker name required'}), 400
+        
+        success = broker_manager.set_active_broker(broker_name)
+        
+        if success:
+            return jsonify({
+                'message': f'Activated broker: {broker_name}',
+                'active_broker': broker_name
+            })
+        else:
+            return jsonify({'error': f'Failed to activate broker {broker_name}'}), 400
+            
+    except Exception as e:
+        logger.error(f"Error activating broker: {e}")
+        return jsonify({'error': 'Failed to activate broker'}), 500
+
+@app.route('/trading/auto', methods=['POST'])
+def toggle_auto_trading():
+    """Enable/disable auto trading"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        data = request.get_json()
+        enabled = data.get('enabled', False)
+        
+        broker_manager.auto_trading_enabled = enabled
+        
+        return jsonify({
+            'message': f'Auto trading {"enabled" if enabled else "disabled"}',
+            'auto_trading_enabled': enabled
+        })
+        
+    except Exception as e:
+        logger.error(f"Error toggling auto trading: {e}")
+        return jsonify({'error': 'Failed to toggle auto trading'}), 500
+
+@app.route('/trading/execute', methods=['POST'])
+def execute_trade():
+    """Manually execute a trade"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        data = request.get_json()
+        signal_data = data.get('signal_data')
+        
+        if not signal_data:
+            return jsonify({'error': 'Signal data required'}), 400
+        
+        result = broker_manager.execute_signal(signal_data)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Error executing trade: {e}")
+        return jsonify({'error': 'Failed to execute trade'}), 500
+
+@app.route('/trading/history', methods=['GET'])
+def get_trading_history():
+    """Get trading history"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        limit = request.args.get('limit', 50, type=int)
+        history = broker_manager.get_trading_history(limit)
+        
+        return jsonify({
+            'trades': history,
+            'total': len(history)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting trading history: {e}")
+        return jsonify({'error': 'Failed to get trading history'}), 500
+
+@app.route('/trading/risk-settings', methods=['GET', 'POST'])
+def manage_risk_settings():
+    """Get or update risk management settings"""
+    if not BROKER_AVAILABLE:
+        return jsonify({'error': 'Broker integrations not available'}), 404
+    
+    try:
+        if request.method == 'GET':
+            return jsonify({
+                'risk_settings': broker_manager.risk_settings,
+                'auto_trading_enabled': broker_manager.auto_trading_enabled
+            })
+        
+        elif request.method == 'POST':
+            data = request.get_json()
+            broker_manager.update_risk_settings(data)
+            
+            return jsonify({
+                'message': 'Risk settings updated successfully',
+                'risk_settings': broker_manager.risk_settings
+            })
+            
+    except Exception as e:
+        logger.error(f"Error managing risk settings: {e}")
+        return jsonify({'error': 'Failed to manage risk settings'}), 500
 
 @app.route('/settings', methods=['POST'])
 def save_settings():
